@@ -40,7 +40,7 @@ public:
 	const ComPtr<ID3D11Device>& getDevice() const { return pDevice; }
 	const ComPtr<ID3D11DeviceContext>& getDeviceContext() const { return pDeviceContext; }
 	const pD3DCompile getCompiler() const { return this->D3DCompile; }
-	void presentFrame(ComPtr<ID3D11ShaderResourceView>& textureView, int width, int height);
+	void presentFrame(ComPtr<ID3D11ShaderResourceView>& textureView, int srcWidth, int srcHeight, int dstWidth, int dstHeight);
 
 	std::string getDriverName() override { return ""; }
 	std::string getDriverVersion() override { return ""; }

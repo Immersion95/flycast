@@ -520,7 +520,7 @@ bool DX11Renderer::Render()
 #else
 		ID3D11RenderTargetView *nullView = nullptr;
 		deviceContext->OMSetRenderTargets(1, &nullView, nullptr);
-		theDX11Context.presentFrame(fbTextureView, width, height);
+		theDX11Context.presentFrame(fbTextureView, width, height, settings.display.width, settings.display.height);
 #endif
 		frameRendered = true;
 		frameRenderedOnce = true;
@@ -1036,7 +1036,7 @@ void DX11Renderer::RenderFramebuffer(const FramebufferInfo& info)
 #else
 	ID3D11RenderTargetView *nullView = nullptr;
 	deviceContext->OMSetRenderTargets(1, &nullView, nullptr);
-	theDX11Context.presentFrame(dcfbTextureView, width, height);
+	theDX11Context.presentFrame(dcfbTextureView, width, height, settings.display.width, settings.display.height);
 #endif
 	frameRendered = true;
 	frameRenderedOnce = true;

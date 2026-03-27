@@ -130,21 +130,30 @@ ComPtr<ID3D11RenderTargetView>& DX11Context::getRenderTarget(int width, int heig
 	return renderTargetView;
 }
 
-void DX11Context::presentFrame(ComPtr<ID3D11ShaderResourceView>& textureView, int width, int height)
+void DX11Context::presentFrame(ComPtr<ID3D11ShaderResourceView>& textureView, int srcWidth, int srcHeight, int dstWidth, int dstHeight)
 {
 	ID3D11ShaderResourceView *nullSRView = nullptr;
 	pDeviceContext->PSSetShaderResources(0, 1, &nullSRView);
-	ComPtr<ID3D11RenderTargetView> renderTarget = getRenderTarget(width, height);
+
+	// The source framebuffer size may differ from the final frontend output size.
+	// Use the destination size for the render target and viewport, while keeping
+	// the source size for framebuffer-relative adjustments such as video shift.
+	if (dstWidth <= 0)
+		dstWidth = srcWidth;
+	if (dstHeight <= 0)
+		dstHeight = srcHeight;
+
+	ComPtr<ID3D11RenderTargetView> renderTarget = getRenderTarget(dstWidth, dstHeight);
 	pDeviceContext->OMSetRenderTargets(1, &renderTarget.get(), nullptr);
 
 	D3D11_VIEWPORT vp{};
-	vp.Width = (FLOAT)width;
-	vp.Height = (FLOAT)height;
+	vp.Width = (FLOAT)dstWidth;
+	vp.Height = (FLOAT)dstHeight;
 	vp.MinDepth = 0.f;
 	vp.MaxDepth = 1.f;
 	pDeviceContext->RSSetViewports(1, &vp);
 
-	const D3D11_RECT r = { 0, 0, width, height };
+	const D3D11_RECT r = { 0, 0, dstWidth, dstHeight };
 	pDeviceContext->RSSetScissorRects(1, &r);
 	float colors[4];
 	VO_BORDER_COL.getRGBColor(colors);
@@ -153,12 +162,12 @@ void DX11Context::presentFrame(ComPtr<ID3D11ShaderResourceView>& textureView, in
 
 	float shiftX, shiftY;
 	getVideoShift(shiftX, shiftY);
-	shiftX *=  2.f / width;
-	shiftY *=  -2.f / height;
+	shiftX *=  2.f / srcWidth;
+	shiftY *=  -2.f / srcHeight;
 
 	pDeviceContext->OMSetBlendState(blendStates.getState(false), nullptr, 0xffffffff);
 	quad->draw(textureView, samplers.getSampler(false), nullptr, -1 + shiftX, -1 + shiftY, 2, 2, false);
-	drawOverlay(width, height);
+	drawOverlay(dstWidth, dstHeight);
 
 	ID3D11RenderTargetView *nullView = nullptr;
 	pDeviceContext->OMSetRenderTargets(1, &nullView, nullptr);
