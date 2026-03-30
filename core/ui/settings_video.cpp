@@ -204,6 +204,9 @@ void gui_settings_video()
 		OptionCheckbox(T("Integer Scaling"), config::IntegerScale, T("Scales the output by the maximum integer multiple allowed by the display resolution."));
 		OptionCheckbox(T("Linear Interpolation"), config::LinearInterpolation, T("Scales the output with linear interpolation. Will use nearest neighbor interpolation otherwise. Disable with integer scaling."));
 #ifndef TARGET_IPHONE
+		const char *timingSources[] = { T("Audio (legacy)"), T("Video (experimental)") };
+		OptionComboBox(T("Timing source"), config::TimingSource, timingSources, std::size(timingSources),
+				T("Selects whether Flycast uses audio or Dreamcast video timing as the main pacing source."));
     	OptionCheckbox(T("VSync"), config::VSync, T("Synchronizes the frame rate with the screen refresh rate. Recommended"));
     	if (isVulkan(config::RendererType))
     	{
