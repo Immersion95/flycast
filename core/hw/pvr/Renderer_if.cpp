@@ -430,7 +430,8 @@ void rend_start_render()
 		palette_update();
 		pend_rend = true;
 		pvrQueue.enqueue(PvrMessageQueue::Render);
-		if (!config::DelayFrameSwapping && !ctx->rend.isRTT && !config::EmulateFramebuffer)
+		const bool presentOnGuestSwap = config::DelayFrameSwapping;
+		if (!presentOnGuestSwap && !ctx->rend.isRTT && !config::EmulateFramebuffer)
 			pvrQueue.enqueue(PvrMessageQueue::Present);
 	}
 }
@@ -507,7 +508,7 @@ void rend_set_fb_write_addr(u32 fb_w_sof1)
 
 void rend_swap_frame(u32 fb_r_sof)
 {
-	if (!config::EmulateFramebuffer && fb_r_sof == fb_w_cur && rend_is_enabled())
+	if (config::DelayFrameSwapping && !config::EmulateFramebuffer && fb_r_sof == fb_w_cur && rend_is_enabled())
 		pvrQueue.enqueue(PvrMessageQueue::Present);
 }
 

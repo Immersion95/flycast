@@ -13,3 +13,5 @@ void CalculateSync();
 void read_lightgun_position(int x, int y);
 void scheduleRenderDone(TA_context *cntx);
 void rescheduleSPG();
+bool spg_TryGetScheduledRefreshHz(double& hz);
+bool spg_TryGetExactRefreshHz(double& hz);

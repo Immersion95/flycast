@@ -41,10 +41,12 @@
 #include "network/naomi_network.h"
 #include "serialize.h"
 #include "hw/pvr/pvr.h"
+#include "hw/pvr/spg.h"
 #include "profiler/fc_profiler.h"
 #include "oslib/storage.h"
 #include "wsi/context.h"
 #include <chrono>
+#include <thread>
 #ifndef LIBRETRO
 #include "ui/gui.h"
 #endif
@@ -54,6 +56,44 @@
 
 settings_t settings;
 constexpr char const *BIOS_TITLE = "Dreamcast BIOS";
+
+namespace {
+class VideoSyncClock
+{
+public:
+	void reset()
+	{
+		initialized = false;
+	}
+
+	void wait()
+	{
+		using namespace std::chrono;
+		double refreshHz;
+		if (!spg_TryGetExactRefreshHz(refreshHz) || refreshHz <= 0.0)
+			return;
+		const auto interval = duration_cast<steady_clock::duration>(duration<double>(1.0 / refreshHz));
+		auto now = steady_clock::now();
+		if (!initialized || now + 250ms < nextTick || now > nextTick + 250ms)
+		{
+			nextTick = now;
+			initialized = true;
+		}
+		nextTick += interval;
+		const auto coarseTarget = nextTick - 1ms;
+		if (coarseTarget > now)
+			std::this_thread::sleep_until(coarseTarget);
+		while (steady_clock::now() < nextTick)
+			std::this_thread::yield();
+	}
+
+private:
+	bool initialized = false;
+	std::chrono::steady_clock::time_point nextTick {};
+};
+
+VideoSyncClock videoSyncClock;
+}
 
 static void loadSpecialSettings()
 {
@@ -1082,6 +1122,15 @@ bool Emulator::render()
 
 void Emulator::vblank()
 {
+	if (config::TimingSource == 1)
+	{
+		if (!settings.input.fastForwardMode)
+			videoSyncClock.wait();
+	}
+	else
+	{
+		videoSyncClock.reset();
+	}
 	EventManager::event(Event::VBlank);
 	runner.execTasks();
 	// Time out if a frame hasn't been rendered for 50 ms

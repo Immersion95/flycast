@@ -96,6 +96,29 @@ void rescheduleSPG()
 	sh4_sched_request(vblank_schid, getNextSpgInterrupt());
 }
 
+bool spg_TryGetScheduledRefreshHz(double& hz)
+{
+	if (Frame_Cycles == 0)
+		return false;
+	hz = static_cast<double>(SH4_MAIN_CLOCK) / static_cast<double>(Frame_Cycles);
+	return hz > 0.0;
+}
+
+
+bool spg_TryGetExactRefreshHz(double& hz)
+{
+	const u32 total_pixels = SPG_LOAD.hcount + 1;
+	const u32 total_lines = SPG_LOAD.vcount + 1;
+	if (total_pixels == 0 || total_lines == 0)
+		return false;
+
+	double pixel_clock = static_cast<double>(PIXEL_CLOCK) / (FB_R_CTRL.vclk_div ? 1.0 : 2.0);
+	hz = pixel_clock / (static_cast<double>(total_pixels) * static_cast<double>(total_lines));
+	if (SPG_CONTROL.interlace)
+		hz *= 2.0;
+	return hz > 0.0;
+}
+
 static int spg_line_sched(int tag, int cycles, int jitter, void *arg)
 {
 	clc_pvr_scanline += cycles + jitter;
