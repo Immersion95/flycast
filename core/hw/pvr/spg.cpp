@@ -96,6 +96,14 @@ void rescheduleSPG()
 	sh4_sched_request(vblank_schid, getNextSpgInterrupt());
 }
 
+bool spg_TryGetRefreshHz(double& hz)
+{
+	if (Frame_Cycles == 0)
+		return false;
+	hz = static_cast<double>(SH4_MAIN_CLOCK) / static_cast<double>(Frame_Cycles);
+	return hz > 0.0;
+}
+
 static int spg_line_sched(int tag, int cycles, int jitter, void *arg)
 {
 	clc_pvr_scanline += cycles + jitter;

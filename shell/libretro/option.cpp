@@ -87,6 +87,7 @@ Option<int> RenderResolution("", 480);
 Option<bool> IntegerScale("");
 Option<bool> LinearInterpolation("", true);
 Option<bool> VSync("", true);
+Option<int> TimingSource("", 0);
 Option<bool> ThreadedRendering(CORE_OPTION_NAME "_threaded_rendering", true);
 Option<int> AnisotropicFiltering(CORE_OPTION_NAME "_anisotropic_filtering");
 Option<int> TextureFiltering(CORE_OPTION_NAME "_texture_filtering");
