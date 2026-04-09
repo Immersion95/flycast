@@ -55,6 +55,7 @@
 #include "hw/maple/maple_cfg.h"
 #include "hw/maple/maple_if.h"
 #include "hw/pvr/pvr_regs.h"
+#include "hw/pvr/spg.h"
 #include "hw/pvr/Renderer_if.h"
 #include "hw/naomi/naomi_cart.h"
 #include "hw/naomi/card_reader.h"
@@ -173,7 +174,6 @@ unsigned per_content_vmus = 0;
 static bool first_run = true;
 static bool rotate_screen;
 static bool rotate_game;
-static bool is_pal;
 static int framebufferWidth;
 static int framebufferHeight;
 static int maxFramebufferWidth;
@@ -693,14 +693,22 @@ static void setGameGeometry(retro_game_geometry& geometry)
 	geometry.base_height = 480;
 }
 
+static bool getCurrentRefreshHz(double& fps)
+{
+	if (spg_TryGetRefreshHz(fps) && fps > 0.0)
+		return true;
+
+	// Keep a sane startup fallback if timing is queried before SPG is ready.
+	fps = SPG_CONTROL.isPAL() ? 50.0 : 59.94;
+	return fps > 0.0;
+}
+
 bool setAVInfo(retro_system_av_info& avinfo)
 {
-	double sample_rate = 44100.0;
-	double fps = SPG_CONTROL.isPAL() ? 50.0 : 59.94;
-
-	// 240p NTSC rate
-	if (framebufferHeight == 240 && !SPG_CONTROL.isNTSC() && !SPG_CONTROL.isPAL())
-		fps = 59.82366;
+	constexpr double sample_rate = 44100.0;
+	double fps;
+	if (!getCurrentRefreshHz(fps))
+		return false;
 
 	setGameGeometry(avinfo.geometry);
 	avinfo.timing.sample_rate = sample_rate;
@@ -708,8 +716,8 @@ bool setAVInfo(retro_system_av_info& avinfo)
 
 	libretro_expected_audio_samples_per_run = sample_rate / fps;
 
-	// Avoid video reinit with same timings
-	if (avinfo.timing.fps == fps_current)
+	// Avoid video reinit with same timings.
+	if (fabs(avinfo.timing.fps - fps_current) < 0.0001)
 		return false;
 
 	fps_current = avinfo.timing.fps;
@@ -1264,15 +1272,16 @@ void retro_run()
 		glsm_ctl(GLSM_CTL_STATE_UNBIND, nullptr);
 #endif
 
-	// Unless VGA cable is selected, We need to update
-	// the refresh rate for PAL games with a 60Hz mode
-	bool pal_check = SPG_CONTROL.isPAL();
-	if (is_pal != pal_check)
+	double current_refresh_hz;
+	if (getCurrentRefreshHz(current_refresh_hz))
 	{
-		retro_system_av_info avinfo;
-		is_pal = pal_check;
-		setAVInfo(avinfo);
-		environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &avinfo);
+		const double current_timing_fps = current_refresh_hz / (double)libretro_vsync_swap_interval;
+		if (fabs(current_timing_fps - fps_current) >= 0.0001)
+		{
+			retro_system_av_info avinfo;
+			if (setAVInfo(avinfo))
+				environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &avinfo);
+		}
 	}
 
 	video_cb(is_dupe ? 0 : RETRO_HW_FRAME_BUFFER_VALID, framebufferWidth, framebufferHeight, 0);
