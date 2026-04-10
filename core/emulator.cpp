@@ -998,9 +998,8 @@ void Emulator::run()
 {
 	verify(state == Running);
 	startTime = sh4_sched_now64();
-	renderTimeout = false;
 	if (!singleStep && stepRangeTo == 0)
-	getSh4Executor()->Start();
+		getSh4Executor()->Start();
 	try {
 		runInternal();
 		if (ggpo::active())
@@ -1044,7 +1043,6 @@ void Emulator::start()
 					while (state == Running || singleStep || stepRangeTo != 0)
 					{
 						startTime = sh4_sched_now64();
-						renderTimeout = false;
 						runInternal();
 						if (!ggpo::nextFrame())
 							break;
@@ -1110,8 +1108,7 @@ bool Emulator::render()
 		if (state != Running)
 			return false;
 		run();
-		// TODO if stopping due to a user request, no frame has been rendered
-		return !renderTimeout;
+		return true;
 	}
 	if (!checkStatus())
 		return false;
@@ -1134,9 +1131,8 @@ void Emulator::vblank()
 	EventManager::event(Event::VBlank);
 	runner.execTasks();
 	// Time out if a frame hasn't been rendered for 50 ms
-	if (sh4_sched_now64() - startTime <= 10000000)
+	if (sh4_sched_now64() - startTime <= 50_sh4ms)
 		return;
-	renderTimeout = true;
 	if (ggpo::active())
 		ggpo::endOfFrame();
 	else if (!config::ThreadedRendering)
