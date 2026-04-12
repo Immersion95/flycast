@@ -55,6 +55,7 @@
 #include "hw/maple/maple_cfg.h"
 #include "hw/maple/maple_if.h"
 #include "hw/pvr/pvr_regs.h"
+#include "hw/pvr/spg.h"
 #include "hw/pvr/Renderer_if.h"
 #include "hw/naomi/naomi_cart.h"
 #include "hw/naomi/card_reader.h"
@@ -110,6 +111,7 @@ extern void retro_audio_init(void);
 extern void retro_audio_deinit(void);
 extern void retro_audio_flush_buffer(void);
 extern void retro_audio_upload(void);
+extern void retro_audio_reset_timing(void);
 
 std::string arcadeFlashPath;
 
@@ -180,6 +182,94 @@ static int maxFramebufferWidth;
 static int maxFramebufferHeight;
 static float framebufferAspectRatio = 4.f / 3.f;
 static double fps_current;
+static double last_valid_content_refresh = 0.0;
+static bool pending_geometry_update = false;
+static bool pending_av_info_update = false;
+static bool frontend_av_info_valid = false;
+
+namespace {
+constexpr double kRefreshEpsilon = 0.0005;
+
+struct FrontendGeometryState {
+	unsigned base_width = 0;
+	unsigned base_height = 0;
+	unsigned max_width = 0;
+	unsigned max_height = 0;
+	float aspect_ratio = 0.0f;
+};
+
+static FrontendGeometryState frontend_geometry_state;
+
+static bool geometryEquals(const retro_game_geometry& geometry, const FrontendGeometryState& state)
+{
+	return geometry.base_width == state.base_width
+		&& geometry.base_height == state.base_height
+		&& geometry.max_width == state.max_width
+		&& geometry.max_height == state.max_height
+		&& fabsf(geometry.aspect_ratio - state.aspect_ratio) < 0.0001f;
+}
+
+static void rememberGeometry(const retro_game_geometry& geometry)
+{
+	frontend_geometry_state.base_width = geometry.base_width;
+	frontend_geometry_state.base_height = geometry.base_height;
+	frontend_geometry_state.max_width = geometry.max_width;
+	frontend_geometry_state.max_height = geometry.max_height;
+	frontend_geometry_state.aspect_ratio = geometry.aspect_ratio;
+}
+
+static double getBootstrapRefreshHz()
+{
+	return SPG_CONTROL.isPAL() ? 50.0 : 59.94;
+}
+
+static bool tryGetContentRefreshHz(double& refreshHz)
+{
+	if (spg_TryGetExactRefreshHz(refreshHz) && refreshHz > 0.0)
+	{
+		last_valid_content_refresh = refreshHz;
+		return true;
+	}
+	return false;
+}
+
+static bool getContentRefreshHz(double& refreshHz, bool allowBootstrap)
+{
+	if (tryGetContentRefreshHz(refreshHz))
+	{
+		return true;
+	}
+	if (last_valid_content_refresh > 0.0)
+	{
+		refreshHz = last_valid_content_refresh;
+		return true;
+	}
+	if (allowBootstrap)
+	{
+		refreshHz = getBootstrapRefreshHz();
+		return true;
+	}
+	return false;
+}
+
+static void resetFrontendAvTracking(bool clearFramebuffer = false)
+{
+	frontend_av_info_valid = false;
+	fps_current = 0.0;
+	frontend_geometry_state = FrontendGeometryState{};
+	pending_geometry_update = false;
+	pending_av_info_update = false;
+	last_valid_content_refresh = 0.0;
+	if (clearFramebuffer)
+	{
+		framebufferWidth = 0;
+		framebufferHeight = 0;
+		maxFramebufferWidth = 0;
+		maxFramebufferHeight = 0;
+		framebufferAspectRatio = 4.f / 3.f;
+	}
+}
+}
 
 float libretro_expected_audio_samples_per_run;
 unsigned libretro_vsync_swap_interval = 1;
@@ -682,83 +772,136 @@ static void setGameGeometry(retro_game_geometry& geometry)
 {
 	geometry.aspect_ratio = framebufferAspectRatio;
 	if (rotate_screen)
-		geometry.aspect_ratio = 1 / geometry.aspect_ratio;
+		geometry.aspect_ratio = 1.0f / geometry.aspect_ratio;
 
-	// Use same height for rotation potential
-	geometry.max_width = std::max(maxFramebufferWidth, framebufferWidth);
-	geometry.max_height = geometry.max_width;
+	const unsigned baseWidth = (unsigned)std::max(framebufferWidth, 1);
+	const unsigned baseHeight = (unsigned)std::max(framebufferHeight, 1);
+	geometry.base_width = baseWidth;
+	geometry.base_height = baseHeight;
+	geometry.max_width = std::max((unsigned)std::max(maxFramebufferWidth, 1), baseWidth);
+	geometry.max_height = std::max((unsigned)std::max(maxFramebufferHeight, 1), baseHeight);
+}
 
-	// Avoid gigantic window size at startup
-	geometry.base_width = 640;
-	geometry.base_height = 480;
+static void updateExpectedAudioSamplesPerRun(double content_fps)
+{
+	libretro_expected_audio_samples_per_run = 44100.0 / content_fps;
+}
+
+static bool buildCurrentAVInfo(retro_system_av_info& avinfo, bool allowBootstrap, double* outContentFps = nullptr)
+{
+	double sample_rate = 44100.0;
+	double content_fps;
+	if (!getContentRefreshHz(content_fps, allowBootstrap))
+		return false;
+
+	setGameGeometry(avinfo.geometry);
+	avinfo.timing.sample_rate = sample_rate;
+	avinfo.timing.fps = content_fps / (double)std::max(1u, libretro_vsync_swap_interval);
+	if (outContentFps != nullptr)
+		*outContentFps = content_fps;
+	return true;
 }
 
 bool setAVInfo(retro_system_av_info& avinfo)
 {
-	double sample_rate = 44100.0;
-	double fps = SPG_CONTROL.isPAL() ? 50.0 : 59.94;
-
-	// 240p NTSC rate
-	if (framebufferHeight == 240 && !SPG_CONTROL.isNTSC() && !SPG_CONTROL.isPAL())
-		fps = 59.82366;
-
-	setGameGeometry(avinfo.geometry);
-	avinfo.timing.sample_rate = sample_rate;
-	avinfo.timing.fps = fps / (double)libretro_vsync_swap_interval;
-
-	libretro_expected_audio_samples_per_run = sample_rate / fps;
-
-	// Avoid video reinit with same timings
-	if (avinfo.timing.fps == fps_current)
+	double content_fps;
+	if (!buildCurrentAVInfo(avinfo, true, &content_fps))
 		return false;
-
-	fps_current = avinfo.timing.fps;
+	updateExpectedAudioSamplesPerRun(content_fps);
 	return true;
 }
 
-static bool retro_refresh_av_info(void)
+void retro_request_av_info_update(void)
+{
+	pending_av_info_update = true;
+}
+
+static bool currentAvInfoDiffers(bool allowBootstrap, bool* timingChanged, bool* geometryChanged)
 {
 	retro_system_av_info avinfo;
-
-	if (first_run || game_data.empty())
+	if (!buildCurrentAVInfo(avinfo, allowBootstrap))
 		return false;
 
-	if (setAVInfo(avinfo))
-	{
-		environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &avinfo);
-		return true;
-	}
+	const bool localTimingChanged = !frontend_av_info_valid || fabs(avinfo.timing.fps - fps_current) > kRefreshEpsilon;
+	const bool localGeometryChanged = !frontend_av_info_valid || !geometryEquals(avinfo.geometry, frontend_geometry_state);
+	if (timingChanged != nullptr)
+		*timingChanged = localTimingChanged;
+	if (geometryChanged != nullptr)
+		*geometryChanged = localGeometryChanged;
+	return localTimingChanged || localGeometryChanged;
+}
 
+static void queueDynamicVideoRefresh(bool allowBootstrap)
+{
+	bool timingChanged = false;
+	bool geometryChanged = false;
+	if (!currentAvInfoDiffers(allowBootstrap, &timingChanged, &geometryChanged))
+		return;
+	if (timingChanged)
+		pending_av_info_update = true;
+	else if (geometryChanged)
+		pending_geometry_update = true;
+}
+
+static bool applyPendingVideoUpdates(bool allowBootstrap, bool haveRealFrame)
+{
+	if (!haveRealFrame)
+		return false;
+
+	if (!pending_av_info_update && !pending_geometry_update)
+		queueDynamicVideoRefresh(allowBootstrap);
+
+	if (pending_av_info_update)
+	{
+		retro_system_av_info avinfo;
+		double content_fps;
+		if (buildCurrentAVInfo(avinfo, allowBootstrap, &content_fps))
+		{
+			if (environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &avinfo))
+			{
+				updateExpectedAudioSamplesPerRun(content_fps);
+				fps_current = avinfo.timing.fps;
+				rememberGeometry(avinfo.geometry);
+				frontend_av_info_valid = true;
+				pending_av_info_update = false;
+				pending_geometry_update = false;
+				return true;
+			}
+		}
+	}
+	if (pending_geometry_update)
+	{
+		retro_game_geometry geometry;
+		setGameGeometry(geometry);
+		if (environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &geometry))
+		{
+			rememberGeometry(geometry);
+			frontend_av_info_valid = frontend_av_info_valid || fps_current > 0.0;
+			pending_geometry_update = false;
+			return true;
+		}
+	}
 	return false;
 }
 
+
 void retro_resize_renderer(int w, int h, float aspectRatio)
 {
-	if (w == framebufferWidth && h == framebufferHeight && aspectRatio == framebufferAspectRatio)
+	if (w == framebufferWidth && h == framebufferHeight && fabsf(aspectRatio - framebufferAspectRatio) < 0.0001f)
 		return;
+
 	framebufferWidth = w;
 	framebufferHeight = h;
 	framebufferAspectRatio = aspectRatio;
-	bool avinfoNeeded = framebufferHeight > maxFramebufferHeight || framebufferWidth > maxFramebufferWidth;
+
+	const bool maxSizeChanged = framebufferHeight > maxFramebufferHeight || framebufferWidth > maxFramebufferWidth;
 	maxFramebufferHeight = std::max(maxFramebufferHeight, framebufferHeight);
 	maxFramebufferWidth = std::max(maxFramebufferWidth, framebufferWidth);
 
-	if (avinfoNeeded)
-	{
-		retro_system_av_info avinfo;
-		setAVInfo(avinfo);
-		environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &avinfo);
-	}
+	if (maxSizeChanged)
+		pending_av_info_update = true;
 	else
-	{
-		// Check if timing change is needed instead
-		if (retro_refresh_av_info())
-			return;
-
-		retro_game_geometry geometry;
-		setGameGeometry(geometry);
-		environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &geometry);
-	}
+		pending_geometry_update = true;
 }
 
 static void setRotation()
@@ -788,6 +931,10 @@ static void update_variables(bool first_startup)
 	config::Settings::instance().setRetroEnvironment(environ_cb);
 	config::Settings::instance().setOptionDefinitions(option_defs_us);
 	config::Settings::instance().load(false);
+
+	// Libretro v1 stays on the cleaned-up audio legacy path.
+	// Exact SPG refresh is still used for AV info/timing exposure.
+	config::TimingSource = 0;
 
 	retro_variable var;
 
@@ -1172,9 +1319,7 @@ static void update_variables(bool first_startup)
 		if (rotate_screen != (prevRotateScreen ^ rotate_game))
 		{
 			setRotation();
-			retro_game_geometry geometry;
-			setGameGeometry(geometry);
-			environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &geometry);
+			pending_geometry_update = true;
 		}
 		else
 			rotate_screen ^= rotate_game;
@@ -1186,9 +1331,7 @@ static void update_variables(bool first_startup)
 			 (libretro_vsync_swap_interval != 1))
 		{
 			libretro_vsync_swap_interval = 1;
-			retro_system_av_info avinfo;
-			setAVInfo(avinfo);
-			environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &avinfo);
+			pending_av_info_update = true;
 		}
 		// must *not* be changed once a game is started
 		config::EmulateBBA.override(emulateBba);
@@ -1264,16 +1407,13 @@ void retro_run()
 		glsm_ctl(GLSM_CTL_STATE_UNBIND, nullptr);
 #endif
 
-	// Unless VGA cable is selected, We need to update
-	// the refresh rate for PAL games with a 60Hz mode
-	bool pal_check = SPG_CONTROL.isPAL();
+	const bool pal_check = SPG_CONTROL.isPAL();
 	if (is_pal != pal_check)
 	{
-		retro_system_av_info avinfo;
 		is_pal = pal_check;
-		setAVInfo(avinfo);
-		environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &avinfo);
+		pending_av_info_update = true;
 	}
+	queueDynamicVideoRefresh(!frontend_av_info_valid);
 
 	video_cb(is_dupe ? 0 : RETRO_HW_FRAME_BUFFER_VALID, framebufferWidth, framebufferHeight, 0);
 
@@ -1282,6 +1422,7 @@ void retro_run()
 	else
 		retro_audio_flush_buffer();
 
+	applyPendingVideoUpdates(!frontend_av_info_valid, !is_dupe);
 	first_run = false;
 }
 
@@ -1311,11 +1452,11 @@ void retro_reset()
 		config::Widescreen.override(false);
 	config::Rotate90 = false;
 
-	retro_game_geometry geometry;
-	setGameGeometry(geometry);
-	environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &geometry);
+	resetFrontendAvTracking();
+	pending_av_info_update = true;
 	blankVmus();
 	retro_audio_flush_buffer();
+	retro_audio_reset_timing();
 
 	emu.start();
 }
@@ -2185,6 +2326,8 @@ bool retro_load_game(const struct retro_game_info *game)
 		snprintf(content_name, sizeof(content_name), "vmu_save");
 	// Per-content VMU additions END
 
+	resetFrontendAvTracking(true);
+	retro_audio_reset_timing();
 	update_variables(true);
 
 	char *ext = strrchr(g_base_name, '.');
@@ -2343,6 +2486,8 @@ bool retro_load_game(const struct retro_game_info *game)
 	config::Rotate90 = false;	// actual framebuffer rotation is done by frontend
 
 	setRotation();
+	pending_av_info_update = true;
+	pending_geometry_update = true;
 
 	haveCardReader = card_reader::readerAvailable();
 	dreampotato::update();
@@ -2368,6 +2513,9 @@ void retro_unload_game()
 	disk_paths.clear();
 	disk_labels.clear();
 	blankVmus();
+	retro_audio_flush_buffer();
+	retro_audio_reset_timing();
+	resetFrontendAvTracking(true);
 }
 
 
@@ -2450,7 +2598,11 @@ bool retro_unserialize(const void * data, size_t size)
 	try {
 		Deserializer deser(data, size);
 		emu.loadstate(deser);
-	    retro_audio_flush_buffer();
+		retro_audio_flush_buffer();
+		retro_audio_reset_timing();
+		resetFrontendAvTracking();
+		pending_av_info_update = true;
+		pending_geometry_update = true;
 		if (!first_run)
 			emu.start();
 
@@ -2504,8 +2656,12 @@ void retro_get_system_av_info(retro_system_av_info *info)
 		environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &msg);
 	}
 
-	framebufferWidth = config::RenderResolution * 16 / 9;
-	framebufferHeight = config::RenderResolution;
+	if (framebufferHeight <= 0)
+		framebufferHeight = config::RenderResolution;
+	if (framebufferAspectRatio <= 0.f)
+		framebufferAspectRatio = 4.f / 3.f;
+	if (framebufferWidth <= 0)
+		framebufferWidth = std::max(1, (int)lround((double)framebufferHeight * framebufferAspectRatio));
 	maxFramebufferWidth = std::max(maxFramebufferWidth, framebufferWidth);
 	maxFramebufferHeight = std::max(maxFramebufferHeight, framebufferHeight);
 	setAVInfo(*info);
