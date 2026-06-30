@@ -244,6 +244,8 @@ private:
 			renderEnd.Set();
 		else if (config::DelayFrameSwapping && fb_w_cur == FB_R_SOF1)
 			present();
+		else if (config::DelayFrameSwapping)
+			renderer->SubmitFrame();
 
 		//clear up & free data ..
 		FinishRender(taContext);
