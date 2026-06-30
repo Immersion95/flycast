@@ -39,6 +39,9 @@ struct DX11Renderer : public Renderer
 	void Process(TA_context* ctx) override;
 	bool Render() override;
 	void RenderFramebuffer(const FramebufferInfo& info) override;
+#ifndef LIBRETRO
+	void SubmitFrame() override { deviceContext->Flush(); }
+#endif
 
 	bool Present() override
 	{
