@@ -106,6 +106,7 @@ Option<int> RenderResolution("rend.Resolution", 480);
 Option<bool> IntegerScale("rend.IntegerScale", false);
 Option<bool> LinearInterpolation("rend.LinearInterpolation", true);
 Option<bool> VSync("rend.vsync", true);
+Option<int> TimingSource("rend.TimingSource", 0);
 Option<int64_t> PixelBufferSize("rend.PixelBufferSize", 512_MB);
 Option<int> AnisotropicFiltering("rend.AnisotropicFiltering", 1);
 Option<int> TextureFiltering("rend.TextureFiltering", 0); // Default
