@@ -115,6 +115,7 @@ constexpr char slash = '/';
 extern void retro_audio_init(void);
 extern void retro_audio_deinit(void);
 extern void retro_audio_flush_buffer(void);
+extern void retro_audio_reset_timing(void);
 extern void retro_audio_upload(void);
 
 std::string arcadeFlashPath;
@@ -844,6 +845,8 @@ static void update_variables(bool first_startup)
 	config::Settings::instance().setRetroEnvironment(environ_cb);
 	config::Settings::instance().setOptionDefinitions(option_defs_us);
 	config::Settings::instance().load(false);
+	// Libretro always uses the audio timing path.
+	config::TimingSource = 0;
 
 	retro_variable var;
 
@@ -2270,6 +2273,7 @@ bool retro_load_game(const struct retro_game_info *game)
 		snprintf(content_name, sizeof(content_name), "vmu_save");
 	// Per-content VMU additions END
 
+	retro_audio_reset_timing();
 	update_variables(true);
 
 	char *ext = strrchr(g_base_name, '.');
@@ -2453,6 +2457,7 @@ void retro_unload_game()
 	disk_paths.clear();
 	disk_labels.clear();
 	blankVmus();
+	retro_audio_flush_buffer();
 }
 
 

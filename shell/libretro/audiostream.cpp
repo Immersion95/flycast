@@ -23,6 +23,11 @@
 
 #include <vector>
 #include <mutex>
+#include <algorithm>
+#include <chrono>
+#include <cstring>
+#include <limits>
+#include <thread>
 
 /* Detect output refresh rate changes by monitoring
  * the last 'VSYNC_SWAP_INTERVAL_FRAMES' frames:
@@ -57,6 +62,46 @@ static size_t audio_buffer_idx;
 static size_t audio_batch_frames_max;
 static bool drop_samples = true;
 
+namespace {
+class AudioSyncClock
+{
+public:
+	void reset()
+	{
+		initialized = false;
+	}
+
+	void waitForFrames(size_t frames)
+	{
+		if (frames == 0)
+			return;
+
+		using namespace std::chrono;
+		const auto interval = duration_cast<steady_clock::duration>(
+				duration<double>(static_cast<double>(frames) / 44100.0));
+		auto now = steady_clock::now();
+		if (!initialized || now + 250ms < nextTick || now > nextTick + 250ms)
+		{
+			nextTick = now;
+			initialized = true;
+		}
+
+		nextTick += interval;
+		const auto coarseTarget = nextTick - 1ms;
+		if (coarseTarget > now)
+			std::this_thread::sleep_until(coarseTarget);
+		while (steady_clock::now() < nextTick)
+			std::this_thread::yield();
+	}
+
+private:
+	bool initialized = false;
+	std::chrono::steady_clock::time_point nextTick {};
+};
+
+AudioSyncClock audioSyncClock;
+}
+
 static int16_t *audio_out_buffer = nullptr;
 
 void retro_audio_init(void)
@@ -86,6 +131,7 @@ void retro_audio_init(void)
 	audio_samples_per_frame_avg = 0.0f;
 	vsync_swap_interval_last = 1;
 	vsync_swap_interval_conter = 0;
+	audioSyncClock.reset();
 }
 
 void retro_audio_deinit(void)
@@ -105,6 +151,7 @@ void retro_audio_deinit(void)
 	audio_samples_per_frame_avg = 0.0f;
 	vsync_swap_interval_last = 1;
 	vsync_swap_interval_conter = 0;
+	audioSyncClock.reset();
 }
 
 void retro_audio_flush_buffer(void)
@@ -115,6 +162,12 @@ void retro_audio_flush_buffer(void)
 	/* We are manually 'resetting' the audio buffer
 	 * -> any 'drop samples' lock can be released */
 	drop_samples = false;
+	audioSyncClock.reset();
+}
+
+void retro_audio_reset_timing(void)
+{
+	audioSyncClock.reset();
 }
 
 void retro_audio_upload(void)
@@ -192,21 +245,67 @@ void retro_audio_upload(void)
 			vsync_swap_interval_conter = 0;
 	}
 
+	size_t batch_frames_max = audio_batch_frames_max;
+	if (batch_frames_max == 0)
+		batch_frames_max = std::numeric_limits<size_t>::max();
+
+	size_t total_written_frames = 0;
 	int16_t *audio_out_buffer_ptr = audio_out_buffer;
 	while (num_frames > 0)
 	{
-		size_t frames_to_write = (num_frames > audio_batch_frames_max) ?
-				audio_batch_frames_max : num_frames;
-		size_t frames_written = audio_batch_cb(audio_out_buffer_ptr,
+		const size_t frames_to_write = std::min(num_frames, batch_frames_max);
+		const size_t frames_written = std::min(audio_batch_cb(audio_out_buffer_ptr, frames_to_write),
 				frames_to_write);
+		if (frames_written == 0)
+			break;
 
-		if ((frames_written < frames_to_write) &&
-			 (frames_written > 0))
-			audio_batch_frames_max = frames_written;
+		total_written_frames += frames_written;
+		num_frames -= frames_written;
+		audio_out_buffer_ptr += frames_written << 1;
 
-		num_frames -= frames_to_write;
-		audio_out_buffer_ptr += frames_to_write << 1;
+		if (frames_written < frames_to_write)
+		{
+			batch_frames_max = frames_written;
+			audio_batch_frames_max = std::max<size_t>(frames_written, 1);
+		}
+		else if (audio_batch_frames_max != std::numeric_limits<size_t>::max())
+		{
+			audio_batch_frames_max = audio_batch_frames_max >= std::numeric_limits<size_t>::max() / 2
+					? std::numeric_limits<size_t>::max()
+					: std::max(audio_batch_frames_max * 2, batch_frames_max);
+		}
 	}
+
+	if (num_frames > 0)
+	{
+		const size_t remaining_samples = num_frames << 1;
+		const size_t written_samples_offset = total_written_frames << 1;
+		const size_t buffer_capacity = audio_buffer.size();
+		const std::lock_guard<std::mutex> lock(audio_buffer_mutex);
+		size_t existing_samples = audio_buffer_idx;
+
+		if (remaining_samples >= buffer_capacity)
+		{
+			std::memcpy(audio_buffer.data(), audio_out_buffer + written_samples_offset,
+					buffer_capacity * sizeof(int16_t));
+			audio_buffer_idx = buffer_capacity;
+			drop_samples = true;
+		}
+		else
+		{
+			existing_samples = std::min(existing_samples, buffer_capacity - remaining_samples);
+			std::memmove(audio_buffer.data() + remaining_samples, audio_buffer.data(),
+					existing_samples * sizeof(int16_t));
+			std::memcpy(audio_buffer.data(), audio_out_buffer + written_samples_offset,
+					remaining_samples * sizeof(int16_t));
+			audio_buffer_idx = remaining_samples + existing_samples;
+		}
+	}
+
+	if (config::LimitFPS && config::TimingSource == 0 && !settings.input.fastForwardMode)
+		audioSyncClock.waitForFrames(total_written_frames);
+	else
+		audioSyncClock.reset();
 }
 
 void WriteSample(s16 r, s16 l)
