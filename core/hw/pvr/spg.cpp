@@ -8,6 +8,7 @@
 #include "hw/pvr/Renderer_if.h"
 #include "stdclass.h"
 #include <array>
+#include <cmath>
 
 #ifdef TEST_AUTOMATION
 #include "input/gamepad_device.h"
@@ -104,6 +105,22 @@ static int getNextSpgInterrupt()
 void rescheduleSPG()
 {
 	sh4_sched_request(vblank_schid, getNextSpgInterrupt());
+}
+
+bool spg_TryGetExactRefreshHz(double& hz)
+{
+	if (Frame_Cycles == 0)
+		return false;
+
+	const double totalPixels = static_cast<double>(SPG_LOAD.hcount) + 1.0;
+	const double totalLines = static_cast<double>(SPG_LOAD.vcount) + 1.0;
+	const double pixelClock = static_cast<double>(PIXEL_CLOCK) / (FB_R_CTRL.vclk_div ? 1.0 : 2.0);
+
+	hz = pixelClock / (totalPixels * totalLines);
+	if (SPG_CONTROL.interlace)
+		hz *= 2.0;
+
+	return std::isfinite(hz) && hz > 0.0;
 }
 
 static int spg_line_sched(int tag, int cycles, int jitter, void *arg)
