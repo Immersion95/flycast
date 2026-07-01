@@ -56,7 +56,7 @@ void WriteSample(s16 r, s16 l)
 	if (++writePtr == SAMPLE_COUNT)
 	{
 		if (currentBackend != nullptr)
-			currentBackend->push(Buffer, SAMPLE_COUNT, config::LimitFPS);
+			currentBackend->push(Buffer, SAMPLE_COUNT, config::LimitFPS && config::TimingSource == 0);
 		writePtr = 0;
 	}
 }
