@@ -5,6 +5,8 @@ target_sources(${PROJECT_NAME} PRIVATE
         i18n.cpp
         i18n.h
         oslib.h
+        precise_sleep.cpp
+        precise_sleep.h
         resources.cpp
         resources.h
         storage.cpp
@@ -16,7 +18,5 @@ if(NOT LIBRETRO)
     target_sources(${PROJECT_NAME} PRIVATE
             http_client.cpp
             http_client.h
-            precise_sleep.cpp
-            precise_sleep.h
             oslib.cpp)
 endif()

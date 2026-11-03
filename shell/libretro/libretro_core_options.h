@@ -542,6 +542,20 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "enabled",
    },
    {
+      CORE_OPTION_NAME "_timing_source",
+      "Timing Source",
+      NULL,
+      "Legacy uses Ultimate V2 frontend-controlled timing. Video additionally enables the exact SPG V2 limiter inside the core. Select Video to compare pacing with your RetroArch settings.",
+      NULL,
+      "video",
+      {
+         { "legacy", "Legacy" },
+         { "video", "Video" },
+         { NULL, NULL },
+      },
+      "legacy",
+   },
+   {
       CORE_OPTION_NAME "_detect_vsync_swap_interval",
       "Detect Frame Rate Changes",
       NULL,

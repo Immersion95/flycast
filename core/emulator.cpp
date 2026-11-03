@@ -1097,7 +1097,7 @@ bool Emulator::render()
 bool Emulator::videoTimingEnabled() const
 {
 #ifdef LIBRETRO
-	return false;
+	return libretroVideoTiming.load(std::memory_order_relaxed) && !ggpo::active();
 #else
 	return config::TimingSource == config::TimingSourceVideo && !ggpo::active();
 #endif
@@ -1105,14 +1105,11 @@ bool Emulator::videoTimingEnabled() const
 
 void Emulator::resetVideoTiming()
 {
-#ifndef LIBRETRO
 	videoPacer.reset();
-#endif
 }
 
 void Emulator::vblank()
 {
-#ifndef LIBRETRO
 	if (videoTimingEnabled() && !settings.input.fastForwardMode && !singleStep && stepRangeTo == 0)
 	{
 		double refreshHz;
@@ -1123,7 +1120,6 @@ void Emulator::vblank()
 	}
 	else
 		videoPacer.reset();
-#endif
 
 	EventManager::event(Event::VBlank);
 	runner.execTasks();

@@ -21,10 +21,8 @@
 #pragma once
 #include "types.h"
 #include "stdclass.h"
-#ifndef LIBRETRO
 #include "util/frame_pacer.h"
 #include "oslib/precise_sleep.h"
-#endif
 
 #include <atomic>
 #include <future>
@@ -172,8 +170,14 @@ public:
 	 * Called internally on vblank.
 	 */
 	void vblank();
-	// Rollback netplay keeps its existing audio pacing. Libretro is frontend paced.
+	// Rollback netplay keeps its existing audio pacing.
 	bool videoTimingEnabled() const;
+#ifdef LIBRETRO
+	// The frontend thread may change this while the emulation thread is running.
+	void setLibretroVideoTiming(bool enabled) {
+		libretroVideoTiming.store(enabled, std::memory_order_relaxed);
+	}
+#endif
 	/**
 	 * Restart the cpu iff the emu is still running
 	 * Returns true if the cpu was started
@@ -226,10 +230,11 @@ private:
 	Sh4Executor *interpreter = nullptr;
 	Sh4Executor *recompiler = nullptr;
 	ThreadRunner runner;
-#ifndef LIBRETRO
+#ifdef LIBRETRO
+	std::atomic<bool> libretroVideoTiming { false };
+#endif
 	FramePacer videoPacer;
 	PreciseSleeper videoSleeper;
-#endif
 };
 extern Emulator emu;
 
