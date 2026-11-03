@@ -15,14 +15,16 @@
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
  */
 #include "types.h"
-#include "cfg/option.h"
 #include "audio/audiostream.h"
-#include "emulator.h"
 
 #include <libretro.h>
 
 #include <vector>
 #include <mutex>
+#include <algorithm>
+#include <cstring>
+#include <limits>
+#include <cmath>
 
 /* Detect output refresh rate changes by monitoring
  * the last 'VSYNC_SWAP_INTERVAL_FRAMES' frames:
@@ -54,8 +56,18 @@ static unsigned vsync_swap_interval_conter;
 static std::mutex audio_buffer_mutex;
 static std::vector<int16_t> audio_buffer;
 static size_t audio_buffer_idx;
+// Count newly emulated frames independently of queued/retried output.
+static size_t audio_generated_frames;
 static size_t audio_batch_frames_max;
 static bool drop_samples = true;
+
+static void resetFrameRateDetection()
+{
+	audio_samples_per_frame_avg = 0.0f;
+	vsync_swap_interval_last = 1;
+	vsync_swap_interval_conter = 0;
+	libretro_vsync_swap_interval = 1;
+}
 
 static int16_t *audio_out_buffer = nullptr;
 
@@ -77,15 +89,14 @@ void retro_audio_init(void)
 
 	audio_buffer.resize(audio_buffer_size);
 	audio_buffer_idx = 0;
+	audio_generated_frames = 0;
 	audio_batch_frames_max = std::numeric_limits<size_t>::max();
 
 	audio_out_buffer = (int16_t*)malloc(audio_buffer_size * sizeof(int16_t));
 
 	drop_samples = false;
 
-	audio_samples_per_frame_avg = 0.0f;
-	vsync_swap_interval_last = 1;
-	vsync_swap_interval_conter = 0;
+	resetFrameRateDetection();
 }
 
 void retro_audio_deinit(void)
@@ -94,6 +105,7 @@ void retro_audio_deinit(void)
 
 	audio_buffer.clear();
 	audio_buffer_idx = 0;
+	audio_generated_frames = 0;
 
 	if (audio_out_buffer != nullptr)
 		free(audio_out_buffer);
@@ -102,19 +114,20 @@ void retro_audio_deinit(void)
 
 	drop_samples = true;
 
-	audio_samples_per_frame_avg = 0.0f;
-	vsync_swap_interval_last = 1;
-	vsync_swap_interval_conter = 0;
+	resetFrameRateDetection();
 }
 
 void retro_audio_flush_buffer(void)
 {
 	const std::lock_guard<std::mutex> lock(audio_buffer_mutex);
 	audio_buffer_idx = 0;
+	audio_generated_frames = 0;
 
 	/* We are manually 'resetting' the audio buffer
 	 * -> any 'drop samples' lock can be released */
 	drop_samples = false;
+	audio_batch_frames_max = std::numeric_limits<size_t>::max();
+	resetFrameRateDetection();
 }
 
 void retro_audio_upload(void)
@@ -125,7 +138,9 @@ void retro_audio_upload(void)
 		audio_out_buffer[i] = audio_buffer[i];
 
 	size_t num_frames = audio_buffer_idx >> 1;
+	const size_t new_frames = audio_generated_frames;
 	audio_buffer_idx = 0;
+	audio_generated_frames = 0;
 
 	/* Uploading audio 'resets' the audio buffer
 	 * -> any 'drop samples' lock can be released */
@@ -134,11 +149,12 @@ void retro_audio_upload(void)
 	audio_buffer_mutex.unlock();
 
 	/* Attempt to detect changes in output refresh rate */
-	if (libretro_detect_vsync_swap_interval &&
-	    (num_frames > 0))
+	if (libretro_detect_vsync_swap_interval && new_frames > 0
+			&& std::isfinite(libretro_expected_audio_samples_per_run)
+			&& libretro_expected_audio_samples_per_run > 0.0f)
 	{
 		/* Simple running average (leaky-integrator) */
-		audio_samples_per_frame_avg = ((1.0f / (float)VSYNC_SWAP_INTERVAL_FRAMES) * (float)num_frames) +
+		audio_samples_per_frame_avg = ((1.0f / (float)VSYNC_SWAP_INTERVAL_FRAMES) * (float)new_frames) +
 				((1.0f - (1.0f / (float)VSYNC_SWAP_INTERVAL_FRAMES)) * audio_samples_per_frame_avg);
 
 		float swap_ratio = audio_samples_per_frame_avg /
@@ -192,26 +208,73 @@ void retro_audio_upload(void)
 			vsync_swap_interval_conter = 0;
 	}
 
+	size_t batch_frames_max = audio_batch_frames_max;
+	if (batch_frames_max == 0)
+		batch_frames_max = std::numeric_limits<size_t>::max();
+
+	size_t total_written_frames = 0;
 	int16_t *audio_out_buffer_ptr = audio_out_buffer;
 	while (num_frames > 0)
 	{
-		size_t frames_to_write = (num_frames > audio_batch_frames_max) ?
-				audio_batch_frames_max : num_frames;
-		size_t frames_written = audio_batch_cb(audio_out_buffer_ptr,
+		const size_t frames_to_write = std::min(num_frames, batch_frames_max);
+		const size_t frames_written = std::min(audio_batch_cb(audio_out_buffer_ptr, frames_to_write),
 				frames_to_write);
+		if (frames_written == 0)
+			break;
 
-		if ((frames_written < frames_to_write) &&
-			 (frames_written > 0))
-			audio_batch_frames_max = frames_written;
+		total_written_frames += frames_written;
+		num_frames -= frames_written;
+		audio_out_buffer_ptr += frames_written << 1;
 
-		num_frames -= frames_to_write;
-		audio_out_buffer_ptr += frames_to_write << 1;
+		if (frames_written < frames_to_write)
+		{
+			batch_frames_max = frames_written;
+			audio_batch_frames_max = std::max<size_t>(frames_written, 1);
+		}
+		else if (audio_batch_frames_max != std::numeric_limits<size_t>::max())
+		{
+			audio_batch_frames_max = audio_batch_frames_max >= std::numeric_limits<size_t>::max() / 2
+					? std::numeric_limits<size_t>::max()
+					: std::max(audio_batch_frames_max * 2, batch_frames_max);
+		}
 	}
+
+	if (num_frames > 0)
+	{
+		const size_t remaining_samples = num_frames << 1;
+		const size_t written_samples_offset = total_written_frames << 1;
+		const std::lock_guard<std::mutex> lock(audio_buffer_mutex);
+		const size_t buffer_capacity = audio_buffer.size();
+		size_t existing_samples = audio_buffer_idx;
+
+		if (remaining_samples >= buffer_capacity)
+		{
+			std::memcpy(audio_buffer.data(), audio_out_buffer + written_samples_offset,
+					buffer_capacity * sizeof(int16_t));
+			audio_buffer_idx = buffer_capacity;
+			drop_samples = true;
+		}
+		else
+		{
+			existing_samples = std::min(existing_samples, buffer_capacity - remaining_samples);
+			std::memmove(audio_buffer.data() + remaining_samples, audio_buffer.data(),
+					existing_samples * sizeof(int16_t));
+			std::memcpy(audio_buffer.data(), audio_out_buffer + written_samples_offset,
+					remaining_samples * sizeof(int16_t));
+			audio_buffer_idx = remaining_samples + existing_samples;
+		}
+		if (audio_buffer_idx == buffer_capacity)
+			drop_samples = true; // Keep this full batch until the frontend retries it.
+	}
+
+	// Wall-clock pacing belongs to the frontend, including fast-forward and run-ahead.
+
 }
 
 void WriteSample(s16 r, s16 l)
 {
 	const std::lock_guard<std::mutex> lock(audio_buffer_mutex);
+	++audio_generated_frames;
 
 	if (drop_samples)
 		return;

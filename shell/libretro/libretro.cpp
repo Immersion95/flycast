@@ -2265,6 +2265,7 @@ bool retro_load_game(const struct retro_game_info *game)
 		snprintf(content_name, sizeof(content_name), "vmu_save");
 	// Per-content VMU additions END
 
+	retro_audio_flush_buffer();
 	update_variables(true);
 
 	char *ext = strrchr(g_base_name, '.');
@@ -2450,6 +2451,7 @@ void retro_unload_game()
 	disk_paths.clear();
 	disk_labels.clear();
 	blankVmus();
+	retro_audio_flush_buffer();
 }
 
 
