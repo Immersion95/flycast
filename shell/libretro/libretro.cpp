@@ -845,10 +845,13 @@ static void update_variables(bool first_startup)
 	config::Settings::instance().setRetroEnvironment(environ_cb);
 	config::Settings::instance().setOptionDefinitions(option_defs_us);
 	config::Settings::instance().load(false);
-	// The frontend owns playback speed; standalone video timing stays disabled.
-	config::TimingSource = 0;
+	// Keep the standalone setting separate from the experimental core option.
+	config::TimingSource = config::TimingSourceAudio;
 
-	retro_variable var;
+	retro_variable var = { CORE_OPTION_NAME "_timing_source", nullptr };
+	const bool videoTiming = environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var)
+			&& var.value != nullptr && !strcmp(var.value, "video");
+	emu.setLibretroVideoTiming(videoTiming);
 
 	var.key = CORE_OPTION_NAME "_per_content_vmus";
 	unsigned previous_per_content_vmus = per_content_vmus;
