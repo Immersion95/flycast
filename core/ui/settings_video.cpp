@@ -204,6 +204,10 @@ void gui_settings_video()
 		OptionCheckbox(T("Integer Scaling"), config::IntegerScale, T("Scales the output by the maximum integer multiple allowed by the display resolution."));
 		OptionCheckbox(T("Linear Interpolation"), config::LinearInterpolation, T("Scales the output with linear interpolation. Will use nearest neighbor interpolation otherwise. Disable with integer scaling."));
 #ifndef TARGET_IPHONE
+		const char *timingSources[] = { T("Audio (legacy)"), T("Video / VRR (experimental)") };
+		OptionComboBox(T("Timing source"), config::TimingSource, timingSources, std::size(timingSources),
+				T("Video timing follows the emulated refresh rate. Enable VRR on your display and in the graphics driver. "
+				"Rollback netplay uses audio timing."));
     	OptionCheckbox(T("VSync"), config::VSync, T("Synchronizes the frame rate with the screen refresh rate. Recommended"));
     	ImGui::Indent();
 		{

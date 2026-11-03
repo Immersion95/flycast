@@ -844,6 +844,8 @@ static void update_variables(bool first_startup)
 	config::Settings::instance().setRetroEnvironment(environ_cb);
 	config::Settings::instance().setOptionDefinitions(option_defs_us);
 	config::Settings::instance().load(false);
+	// The frontend owns playback speed; standalone video timing stays disabled.
+	config::TimingSource = 0;
 
 	retro_variable var;
 

@@ -467,6 +467,9 @@ extern Option<int> RenderResolution;
 extern Option<bool> IntegerScale;
 extern Option<bool> LinearInterpolation;
 extern Option<bool> VSync;
+constexpr int TimingSourceAudio = 0;
+constexpr int TimingSourceVideo = 1;
+extern Option<int> TimingSource;
 extern Option<int64_t> PixelBufferSize;
 extern Option<int> AnisotropicFiltering;
 extern Option<int> TextureFiltering; // 0: default, 1: force nearest, 2: force linear

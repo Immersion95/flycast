@@ -16,5 +16,7 @@ if(NOT LIBRETRO)
     target_sources(${PROJECT_NAME} PRIVATE
             http_client.cpp
             http_client.h
+            precise_sleep.cpp
+            precise_sleep.h
             oslib.cpp)
 endif()

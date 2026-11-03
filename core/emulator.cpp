@@ -40,6 +40,7 @@
 #include "network/net_handshake.h"
 #include "serialize.h"
 #include "hw/pvr/pvr.h"
+#include "hw/pvr/spg.h"
 #include "profiler/fc_profiler.h"
 #include "oslib/storage.h"
 #include "wsi/context.h"
@@ -440,6 +441,7 @@ static void loadSpecialSettings()
 
 void Emulator::dc_reset(bool hard)
 {
+	resetVideoTiming();
 	if (hard)
 	{
 		NetworkHandshake::term();
@@ -906,6 +908,7 @@ void Emulator::stepRange(u32 from, u32 to)
 
 void Emulator::loadstate(Deserializer& deser)
 {
+	resetVideoTiming();
 	if (!custom_texture.preloaded())
 	{
 		custom_texture.terminate();
@@ -995,6 +998,7 @@ void Emulator::start()
 		WARN_LOG(COMMON, "Unexpected emu state %d", state);
 		return;
 	}
+	resetVideoTiming();
 	state = Running;
 	SetMemoryHandlers();
 	if (config::GGPOEnable && config::ThreadedRendering)
@@ -1090,8 +1094,37 @@ bool Emulator::render()
 	return rend_single_frame(true); // FIXME stop flag?
 }
 
+bool Emulator::videoTimingEnabled() const
+{
+#ifdef LIBRETRO
+	return false;
+#else
+	return config::TimingSource == config::TimingSourceVideo && !ggpo::active();
+#endif
+}
+
+void Emulator::resetVideoTiming()
+{
+#ifndef LIBRETRO
+	videoPacer.reset();
+#endif
+}
+
 void Emulator::vblank()
 {
+#ifndef LIBRETRO
+	if (videoTimingEnabled() && !settings.input.fastForwardMode && !singleStep && stepRangeTo == 0)
+	{
+		double refreshHz;
+		if (spg_TryGetExactRefreshHz(refreshHz))
+			videoSleeper.sleepUntil(videoPacer.nextDeadline(FramePacer::Clock::now(), refreshHz));
+		else
+			videoPacer.reset();
+	}
+	else
+		videoPacer.reset();
+#endif
+
 	EventManager::event(Event::VBlank);
 	runner.execTasks();
 	// Time out if a frame hasn't been rendered for 50 ms
