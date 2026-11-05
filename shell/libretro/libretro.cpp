@@ -72,6 +72,7 @@
 #include "oslib/i18n.h"
 #include "input/dreampotato.h"
 #include "storage.h"
+#include "video_timing.h"
 
 // SMB support does not work when the path contains a back-slash, so just stick to using the portable forward-slash instead.
 constexpr char slash = '/';
@@ -179,14 +180,14 @@ unsigned per_content_vmus = 0;
 static bool first_run = true;
 static bool rotate_screen;
 static bool rotate_game;
-static bool is_pal;
 static int framebufferWidth;
 static int framebufferHeight;
 static int maxFramebufferWidth;
 static int maxFramebufferHeight;
 static float framebufferAspectRatio = 4.f / 3.f;
 static double fps_current;
-static double fps_spg;
+static double sample_rate_current;
+static libretro::VideoTimingState video_timing;
 
 float libretro_expected_audio_samples_per_run;
 unsigned libretro_vsync_swap_interval = 1;
@@ -747,27 +748,27 @@ static void setGameGeometry(retro_game_geometry& geometry)
 
 bool setAVInfo(retro_system_av_info& avinfo)
 {
-	double sample_rate = 44100.0;
-	double fps = (fps_spg) ? fps_spg : SPG_CONTROL.isPAL() ? 50.0 : 59.945300;
+	const auto timing = video_timing.get();
 
 	setGameGeometry(avinfo.geometry);
-	avinfo.timing.sample_rate = sample_rate;
-	avinfo.timing.fps = fps / (double)libretro_vsync_swap_interval;
+	avinfo.timing.sample_rate = timing.sampleRate;
+	avinfo.timing.fps = timing.refreshHz / (double)libretro_vsync_swap_interval;
 
-	libretro_expected_audio_samples_per_run = sample_rate / fps;
+	libretro_expected_audio_samples_per_run = timing.sampleRate / timing.refreshHz;
 
 	// Avoid video reinit with same timings
-	if (double_is_equal(avinfo.timing.fps, fps_current))
+	if (double_is_equal(avinfo.timing.fps, fps_current)
+			&& double_is_equal(avinfo.timing.sample_rate, sample_rate_current))
 		return false;
 
 	fps_current = avinfo.timing.fps;
+	sample_rate_current = avinfo.timing.sample_rate;
 	return true;
 }
 
-void retro_setfps(double fps)
+void retro_set_video_timing(double refreshHz, double sampleRate)
 {
-	if (fps > 0 && fps < 100)
-		fps_spg = fps;
+	video_timing.publish(refreshHz, sampleRate);
 }
 
 static bool retro_refresh_av_info()
@@ -1331,18 +1332,10 @@ void retro_run()
 	if (led_state_cb)
 		retro_led_interface();
 
-	// Unless VGA cable is selected, We need to update
-	// the refresh rate for PAL games with a 60Hz mode
-	bool pal_check = SPG_CONTROL.isPAL();
-	if (is_pal != pal_check)
-	{
-		retro_system_av_info avinfo;
-		is_pal = pal_check;
-		setAVInfo(avinfo);
-		environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &avinfo);
-	}
-
 	video_cb(is_dupe ? 0 : RETRO_HW_FRAME_BUFFER_VALID, framebufferWidth, framebufferHeight, 0);
+
+	// The frontend may reset the video context when timings change.
+	retro_refresh_av_info();
 
 	if (!config::ThreadedRendering || config::LimitFPS)
 		retro_audio_upload();
@@ -2212,6 +2205,9 @@ static bool set_dx11_hw_render()
 // Loading/unloading games
 bool retro_load_game(const struct retro_game_info *game)
 {
+	video_timing.reset();
+	fps_current = sample_rate_current = 0.0;
+
 #if defined(IOS)
 	bool can_jit;
 	if (environ_cb(RETRO_ENVIRONMENT_GET_JIT_CAPABLE, &can_jit) && !can_jit) {
@@ -2447,6 +2443,8 @@ void retro_unload_game()
 	emu.unloadGame();
 	dreampotato::term();
 	game_data.clear();
+	video_timing.reset();
+	fps_current = sample_rate_current = 0.0;
 	disk_paths.clear();
 	disk_labels.clear();
 	blankVmus();

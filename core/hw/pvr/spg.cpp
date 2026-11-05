@@ -1,4 +1,7 @@
 #include "spg.h"
+#ifdef LIBRETRO
+#include "hw/aica/aica_if.h"
+#endif
 #include "hw/holly/holly_intc.h"
 #include "hw/holly/sb.h"
 #include "hw/sh4/sh4_sched.h"
@@ -8,6 +11,7 @@
 #include "hw/pvr/Renderer_if.h"
 #include "stdclass.h"
 #include <array>
+#include <cmath>
 
 #ifdef TEST_AUTOMATION
 #include "input/gamepad_device.h"
@@ -42,7 +46,20 @@ static u32 lightgun_hpos;
 static bool maple_int_pending;
 
 #ifdef LIBRETRO
-extern void retro_setfps(double fps);
+extern void retro_set_video_timing(double refreshHz, double sampleRate);
+
+static void publishRetroTiming()
+{
+	double refreshHz;
+	if (spg_TryGetExactRefreshHz(refreshHz))
+	{
+		// The frontend paces the exact pixel-clock refresh, while the guest
+		// schedulers use integer SH4 periods. Report the audio actually produced
+		// per wall-clock second at that refresh without changing either scheduler.
+		const double sampleRate = static_cast<double>(Frame_Cycles) * refreshHz / aica::AICA_SAMPLE_PERIOD;
+		retro_set_video_timing(refreshHz, sampleRate);
+	}
+}
 #endif
 
 void CalculateSync()
@@ -64,7 +81,7 @@ void CalculateSync()
 	sh4_sched_request(vblank_schid, Line_Cycles);
 
 #ifdef LIBRETRO
-	retro_setfps((double)SH4_MAIN_CLOCK / ((double)Line_Cycles * (double)pvr_numscanlines));
+	publishRetroTiming();
 #endif
 }
 
@@ -102,6 +119,22 @@ static int getNextSpgInterrupt()
 void rescheduleSPG()
 {
 	sh4_sched_request(vblank_schid, getNextSpgInterrupt());
+}
+
+bool spg_TryGetExactRefreshHz(double& hz)
+{
+	if (Frame_Cycles == 0)
+		return false;
+
+	const double totalPixels = static_cast<double>(SPG_LOAD.hcount) + 1.0;
+	const double totalLines = static_cast<double>(SPG_LOAD.vcount) + 1.0;
+	const double pixelClock = static_cast<double>(PIXEL_CLOCK) / (FB_R_CTRL.vclk_div ? 1.0 : 2.0);
+
+	hz = pixelClock / (totalPixels * totalLines);
+	if (SPG_CONTROL.interlace)
+		hz *= 2.0;
+
+	return std::isfinite(hz) && hz > 0.0;
 }
 
 static int spg_line_sched(int tag, int cycles, int jitter, void *arg)
@@ -332,4 +365,9 @@ void spg_Deserialize(Deserializer& deser)
 	deser >> Frame_Cycles;
 	deser >> lightgun_line;
 	deser >> lightgun_hpos;
+#ifdef LIBRETRO
+	// Registers and cycle counts have been restored. Republish without
+	// resetting the scanline position or rescheduling a guest event.
+	publishRetroTiming();
+#endif
 }
