@@ -82,13 +82,12 @@ static bool UpdateSh4Ints()
 
 AicaTimer timers[3];
 int aica_schid = -1;
-constexpr int AICA_TICK = 4535;		// 44.1 KHz
 
 static int AicaUpdate(int tag, int cycles, int jitter, void *arg)
 {
 	arm::run(1);
 
-	return AICA_TICK;
+	return AICA_SAMPLE_PERIOD;
 }
 
 //Mainloop
@@ -263,7 +262,7 @@ void reset(bool hard)
 		initMem();
 		sgc::term();
 		sgc::init();
-		sh4_sched_request(aica_schid, AICA_TICK);
+		sh4_sched_request(aica_schid, AICA_SAMPLE_PERIOD);
 	}
 	for (std::size_t i = 0; i < std::size(timers); i++)
 		timers[i].Init(aica_reg, i);

@@ -1,4 +1,7 @@
 #include "spg.h"
+#ifdef LIBRETRO
+#include "hw/aica/aica_if.h"
+#endif
 #include "hw/holly/holly_intc.h"
 #include "hw/holly/sb.h"
 #include "hw/sh4/sh4_sched.h"
@@ -43,7 +46,20 @@ static u32 lightgun_hpos;
 static bool maple_int_pending;
 
 #ifdef LIBRETRO
-extern void retro_setfps(double fps);
+extern void retro_set_video_timing(double refreshHz, double sampleRate);
+
+static void publishRetroTiming()
+{
+	double refreshHz;
+	if (spg_TryGetExactRefreshHz(refreshHz))
+	{
+		// The frontend paces the exact pixel-clock refresh, while the guest
+		// schedulers use integer SH4 periods. Report the audio actually produced
+		// per wall-clock second at that refresh without changing either scheduler.
+		const double sampleRate = static_cast<double>(Frame_Cycles) * refreshHz / aica::AICA_SAMPLE_PERIOD;
+		retro_set_video_timing(refreshHz, sampleRate);
+	}
+}
 #endif
 
 void CalculateSync()
@@ -65,7 +81,7 @@ void CalculateSync()
 	sh4_sched_request(vblank_schid, Line_Cycles);
 
 #ifdef LIBRETRO
-	retro_setfps((double)SH4_MAIN_CLOCK / ((double)Line_Cycles * (double)pvr_numscanlines));
+	publishRetroTiming();
 #endif
 }
 
@@ -349,4 +365,9 @@ void spg_Deserialize(Deserializer& deser)
 	deser >> Frame_Cycles;
 	deser >> lightgun_line;
 	deser >> lightgun_hpos;
+#ifdef LIBRETRO
+	// Registers and cycle counts have been restored. Republish without
+	// resetting the scanline position or rescheduling a guest event.
+	publishRetroTiming();
+#endif
 }

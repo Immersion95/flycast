@@ -5,6 +5,9 @@
 namespace aica
 {
 
+// SH4 cycles per generated stereo sample frame.
+constexpr int AICA_SAMPLE_PERIOD = 4535;
+
 extern RamRegion aica_ram;
 u32 GetRTC_now();
 template<typename T> T readRtcReg(u32 addr);
